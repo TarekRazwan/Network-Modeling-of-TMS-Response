@@ -1,0 +1,97 @@
+from netpyne import specs, sim
+import matplotlib
+import pandas as pd
+
+# Use Agg backend for matplotlib to avoid DISPLAY issues
+matplotlib.use('Agg')
+
+# Load circuit parameters from Excel
+circuit_params = pd.read_excel('Circuit_param.xls', sheet_name=None, index_col=0)
+cell_names = [i for i in circuit_params['conn_probs'].axes[0]]
+
+netParams = specs.NetParams()
+
+# Synaptic Mechanisms
+netParams.synMechParams['AMPA'] = {'mod': 'Exp2Syn', 'tau1': 0.3, 'tau2': 3.0, 'e': 0}
+netParams.synMechParams['NMDA'] = {'mod': 'Exp2Syn', 'tau1': 2.0, 'tau2': 65.0, 'e': 0}
+netParams.synMechParams['GABA'] = {'mod': 'Exp2Syn', 'tau1': 1.0, 'tau2': 10.0, 'e': -80}
+
+# Cell Parameters
+cellParams = {}
+for name in cell_names:
+    cellParams[name] = {
+        'secs': {
+            'soma': {
+                'geom': {'pt3d': [(0, 0, 0, 10), (0, 0, 10, 10)]},
+                'mechs': {'pas': {'g': 0.0001, 'e': -65}}
+            },
+            'axon': {
+                'geom': {'pt3d': [(0, 0, 0, 1), (100, 0, 0, 1)]},
+                'mechs': {'hh': {'gnabar': 0.12, 'gkbar': 0.036, 'gl': 0.0003, 'el': -54.3}}
+            }
+        }
+    }
+netParams.cellParams.update(cellParams)
+
+# Connectivity Parameters
+connectivity_params = {}
+for pre in cell_names:
+    for post in cell_names:
+        conn_key = f'{pre}->{post}'
+        if "PYR" in pre:
+            syn_mech = 'AMPA'
+        else:
+            syn_mech = 'GABA'
+        
+        connectivity_params[conn_key] = {
+            'preConds': {'pop': pre},
+            'postConds': {'pop': post},
+            'probability': circuit_params["conn_probs"].at[pre, post],
+            'weight': circuit_params["syn_params"][pre+post]['gmax'],
+            'synMech': syn_mech,
+            'delay': 0.5,
+            'plasticity': {
+                'mech': 'TsodyksMarkram',
+                'params': {
+                    'U': circuit_params["syn_params"][pre+post]['Use'],
+                    'tau_rec': circuit_params["syn_params"][pre+post]['Dep'],
+                    'tau_facil': circuit_params["syn_params"][pre+post]['Fac'],
+                    'u0': circuit_params["syn_params"][pre+post]['u0']
+                }
+            }
+        }
+netParams.connParams.update(connectivity_params)
+
+# Stimulation Parameters
+stimParams = {}
+stimuli = []
+for stimulus in circuit_params['STIM_PARAM'].axes[0]:
+    stim = {}
+    for param_name in circuit_params['STIM_PARAM'].axes[1]:
+        stim[param_name] = circuit_params['STIM_PARAM'].at[stimulus, param_name]
+    new_param = circuit_params["syn_params"][stim['syn_params']].copy()
+    new_param['gmax'] = stim['gmax']
+    stim['new_param'] = new_param
+    stimuli.append(stim)
+
+for i, stim in enumerate(stimuli):
+    stim_key = f'stim_{i}'
+    stimParams[stim_key] = {
+        'type': 'NetStim',
+        'rate': stim['interval'],
+        'noise': 0,
+        'start': stim['start_time']
+    }
+    netParams.stimSourceParams[stim_key] = stimParams[stim_key]
+    
+    netParams.stimTargetParams[stim_key] = {
+        'source': stim_key,
+        'conds': {'pop': stim['cell_name']},
+        'weight': stim['gmax'],
+        'delay': stim['delay']
+    }
+
+# Create, simulate, and analyze network
+simConfig = specs.SimConfig()
+simConfig.createNEURONObj = False  # Do not require NEURON GUI
+sim.createSimulateAnalyze(netParams, simConfig)
